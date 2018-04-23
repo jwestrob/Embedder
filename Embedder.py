@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python
 
 import os, sys, csv, time
 import numpy as np
@@ -51,13 +51,15 @@ parser.add_argument('-l', metavar='labels', default=None, dtype=str, help="Label
 
 parser.add_argument('-k', metavar='kmer length', default=None, dtype=int, help="Any number (hopefully above 3 and less than 9, unless you have a HUGE computer)")
 
-parser.add_argument('-ke', metavar='kmer embedding', default=None, dtype=str, help="Path to kmer embedding file (.npy or .csv)")
+parser.add_argument('-kf', metavar='kmer freqs', default=None, dtype=str, help="Path to kmer frequency array file (.npy or .csv)")
 
 parser.add_argument('-t', metavar='tSNE (perplexity)', default=None, dtype=int, help="Enables barnes-hut t-SNE. Please also provide thread num to use. (-tn)")
 
 parser.add_argument('-u', metavar='UMAP (n_neighbors)', default=None, dtype=int, help="Enables UMAP (Universal Manifold Approximation and Projection).")
 
 parser.add_argument('-d', metavar='Dimensionality', default=None, dtype=int, help="Dimensions to reduce embedding to with t-SNE or UMAP.")
+
+parser.add_argument('-nt', metavar='Threads', default=None, dtype=int, help="Number of threads to use for multicore TSNE.")
 
 parser.add_argument('-l', metavar='Labels file', default=None, dtype=str, help="File with labels for contigs.")
 
@@ -69,7 +71,9 @@ labels = args.l
 
 k_len = args.k
 
-embedding = args.ke
+freqs = args.ke
+
+threads = args.nt
 
 perp = args.t
 
@@ -91,7 +95,7 @@ def main():
             kmer_array = convert_seqs(seqs, k_len)
         else:
             kmer_array, new_labels = convert_seqs(seqs, labels, k_len)
-
+            labels = new_labels
     #Save your stuff to output files
     np.savetxt('Embedder_' + str(k_len) + 'mer_freqs.csv', kmer_array, sep=',')
     if new_labels != None:
@@ -104,16 +108,65 @@ def main():
 
     if perp != None:
         #OPT: Load kmer Embedding
+        if freqs != None:
+            if freqs.split('.')[-1] == 'npy':
+                try:
+                    kmer_array = np.load(freqs)
+                except:
+                    print('Something went wrong loading your .npy embedding. Please specify full path.')
+            if freqs.split('.')[-1] == 'txt' or freqs.split('.')[-1] == 'csv':
+                try:
+                    kmer_array = np.loadtxt(freqs, delimiter=',')
+                except:
+                    print('Something went wrong loading your .csv/.txt embedding. Please modify code to include proper delimiter and/or specify full path.')
+
         #Do your tSNE
+
+        # tsne_embed(dims, perplexity, threads, kmer_arr):
+
+        tsne_embedding = tsne_embed(dimensionality, perp, threads, kmer_array)
+
         #Save your tSNE
+        np.save('Embedder_TSNE_p' + str(perp) + '.npy', tsne_embedding)
+
         #Plot
+        if dimensionality == 2:
+            plot_meta_2D(tsne_embedding, 't-SNE', labels)
+        if dimensionality == 3:
+            plot_meta_3D(tsne_embedding, 't-SNE', labels)
+        else:
+            print("Invalid dimensionality for plotting. Sorry.")
+
     if neighbors != None:
         #OPT: Load kmer embedding
+        if freqs != None:
+            if freqs.split('.')[-1] == 'npy':
+                try:
+                    kmer_array = np.load(freqs)
+                except:
+                    print('Something went wrong loading your .npy embedding. Please specify full path.')
+            if freqs.split('.')[-1] == 'txt' or freqs.split('.')[-1] == 'csv':
+                try:
+                    kmer_array = np.loadtxt(freqs, delimiter=',')
+                except:
+                    print('Something went wrong loading your .csv/.txt embedding. Please modify code to include proper delimiter and/or specify full path.')
         #Do your UMAP
+
+        ### umap_embed(neighbors, dims, metric, kmer_arr):
+
+        umap_embedding = umap_embed(neighbors, dimensionality, 'canberra', kmer_array)
         #Save your UMAP
+        np.save('Embedder_UMAP_n' + str(neighbors) + '.npy', umap_embedding)
         #Plot
+        if dimensionality == 2:
+            plot_meta_2D(umap_embedding, 'UMAP', labels)
+        if dimensionality == 3:
+            plot_meta_3D(umap_embedding, 'UMAP', labels)
+        else:
+            print("Invalid dimensionality for plotting. Sorry.")
 
-
+#### calc_kmer_freqs and chunk_sequence are from Patrick West's EukRep:
+#### https://github.com/patrickwest/EukRep
 
 def calc_kmer_freqs(split_seqs, kmer_size):
     '''
@@ -156,19 +209,7 @@ def chunk_sequence(sequence, min_size, max_size):
 
     return split_seqs
 
-def umap_embed_3(neighbors, metric):
-    u_embedding = umap.UMAP(n_components=3,
-                            n_neighbors=neighbors,
-                            min_dist=0.3,
-                            metric=metric).fit_transform(pentamer_array)
-    return u_embedding
-
-def tsne_embed_3(perplexity):
-    tsne = TSNE(n_components=3,perplexity=perplexity,n_jobs=8)
-    t_embedding = tsne.fit_transform(pentamer_array)
-    return t_embedding
-
-def plot_meta_3(embedding, metric, method):
+def plot_meta_3D(embedding, method, labels):
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
 
@@ -177,49 +218,31 @@ def plot_meta_3(embedding, metric, method):
     ax.scatter(embedding[:,0], \
               embedding[:,1], \
               embedding[:,2], \
-              c=contig_labels, cmap=cmspec)
+              c=labels, cmap=cmspec)
 
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
 
-    pylab.title("3D Embedding: " + method + " " + metric)
+    pylab.title("3D Embedding: " + str(method))
     pylab.show()
     return
 
-def plot_meta_3t(embedding, metric):
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-
-    cmspec = plt.get_cmap("nipy_spectral")
-
-    ax.scatter(embedding[:,0], \
-              embedding[:,1], \
-              embedding[:,2], \
-              c=contig_labels, cmap=cmspec)
-
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-
-    pylab.title("3D Embedding: " + metric)
-    pylab.show()
-    return
-
-def umap_embed(neighbors, metric):
-    u_embedding = umap.UMAP(n_neighbors=10,
+def umap_embed(neighbors, dims, metric, kmer_arr):
+    u_embedding = umap.UMAP(n_neighbors=neighbors,
                           min_dist=0.3,
-                          metric='minkowski').fit_transform(pentamer_array)
+                          n_components=dims,
+                          metric=metric).fit_transform(kmer_arr)
     return u_embedding
 
-def tsne_embed_fun():
-    tsne = TSNE(n_jobs=4)
-    return tsne.fit_transform(pentamer_array)
+def tsne_embed(dims, perplexity, threads, kmer_arr):
+    tsne = TSNE(n_jobs=threads, n_components=dims, perplexity=perplexity)
+    return tsne.fit_transform(kmer_arr)
 
-def plot_meta(u_embedding, metric):
-    colors = [int(i % 10) for i in contig_labels]
-    pylab.scatter(u_embedding[:,0], u_embedding[:,1],c=colors,cmap=pylab.cm.spectral)
-    pylab.title("UMAP - Metagenome (Sim, "+ metric+ ")")
+def plot_meta_2D(embedding, method, labels):
+    colors = [int(i % (max(contig_labels))) for i in contig_labels]
+    pylab.scatter(embedding[:,0], embedding[:,1],c=colors,cmap=pylab.cm.spectral)
+    pylab.title(str(method) + "2D Plot")
     pylab.show()
     return
 
@@ -248,6 +271,8 @@ def run_nonsense(neighbors):
         tsne_scores.append(train_and_score(tsne_embedding, 0.4, 'rbf'))
         print("loop " + str(i) + " complete.")
         return u_euc_scores, u_mah_scores, u_cor_scores, tsne_scores
+
+
 def u_run_nonsense(metrics):
     scores = []
     for metric in metrics:
