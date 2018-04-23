@@ -1,4 +1,7 @@
-#!/usr/bin/python
+#!/usr/bin/env python
+
+import warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
 
 import os, sys, csv, time
 import numpy as np
@@ -7,107 +10,76 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.ticker import NullFormatter
 from MulticoreTSNE import MulticoreTSNE as TSNE
-from scipy import stats
 
 from kpal.klib import Profile
 
 import pandas as pd
 
-
-from sklearn import manifold
-from sklearn.utils import check_random_state
-from sklearn.model_selection import train_test_split
-from sklearn import svm
-from sklearn import metrics
-from sklearn.cluster import AffinityPropagation
-
-
 import umap
-from sklearn.datasets import load_digits
 from Bio import SeqIO
 from io import StringIO
 import sys
 
+import textwrap as _textwrap
 import argparse
 
 
 t1 = time.time()
 
-
-
-################################################################################
-#                            ARGUMENT NONSENSE                                 #
-################################################################################
-
-
-parser=argparse.ArgumentParser(description='Two functions:\n 1. Take a set of sequences (-s) and project into a kmer frequency array (-k). See code for method details.\n \
-                            2. Take a given kmer embedding (-ke) and reduce its dimensionality with either t-SNE (-t [perplexity]) or UMAP (-u [n_neighbors]).\n \
-                            In order to perform both of these tasks in sequential order, simply provide values for all parameters except (-ke).\n \
-                            In addition, please specify the dimensionality of your projected space (2 or 3 recommended; >4 will not plot) as well as your labels file (-l).',formatter_class=RawTextHelpFormatter)
-
-parser.add_argument('-s', metavar='sequences', default=None, dtype=str, help="Contig/scaffolds file (FASTA FORMAT ONLY)")
-
-parser.add_argument('-l', metavar='labels', default=None, dtype=str, help="Labels file (npy or txt).")
-
-parser.add_argument('-k', metavar='kmer length', default=None, dtype=int, help="Any number (hopefully above 3 and less than 9, unless you have a HUGE computer)")
-
-parser.add_argument('-kf', metavar='kmer freqs', default=None, dtype=str, help="Path to kmer frequency array file (.npy or .csv)")
-
-parser.add_argument('-t', metavar='tSNE (perplexity)', default=None, dtype=int, help="Enables barnes-hut t-SNE. Please also provide thread num to use. (-tn)")
-
-parser.add_argument('-u', metavar='UMAP (n_neighbors)', default=None, dtype=int, help="Enables UMAP (Universal Manifold Approximation and Projection).")
-
-parser.add_argument('-d', metavar='Dimensionality', default=None, dtype=int, help="Dimensions to reduce embedding to with t-SNE or UMAP.")
-
-parser.add_argument('-nt', metavar='Threads', default=None, dtype=int, help="Number of threads to use for multicore TSNE.")
-
-parser.add_argument('-l', metavar='Labels file', default=None, dtype=str, help="File with labels for contigs.")
-
-args = parser.parse_args()
-
-seqs = args.s
-
-labels = args.l
-
-k_len = args.k
-
-freqs = args.ke
-
-threads = args.nt
-
-perp = args.t
-
-neighbors = args.u
-
-dimensionality = args.d
-
-
 ################################################################################
 #                                FUNCTION ZOO                                  #
 ################################################################################
 
-def main():
-    ### If desired, compute kmer embedding; if necessary, modify labels to fit
-    new_labels = None
+def main(args):
+    seqs = args.s
 
+    label_param = args.l
+
+    k_len = args.k
+
+    freqs = args.kf
+
+    threads = args.nt
+
+    perp = args.t
+
+    neighbors = args.u
+
+    dimensionality = args.d
+
+    ### If desired, compute kmer embedding; if necessary, modify labels to fit
+    label_flag = False
     if seqs != None:
-        if labels == None:
+        if label_param == None:
             kmer_array = convert_seqs(seqs, k_len)
         else:
-            kmer_array, new_labels = convert_seqs(seqs, labels, k_len)
-            labels = new_labels
+            label_flag = True
+            kmer_array, labels = convert_seqs(seqs, k_len, label_param)
     #Save your stuff to output files
-    np.savetxt('Embedder_' + str(k_len) + 'mer_freqs.csv', kmer_array, sep=',')
-    if new_labels != None:
-        np.savetxt('Embedder_Modified_Labels.csv', new_labels, sep=',')
+        np.savetxt('Embedder_' + str(k_len) + 'mer_freqs.csv', kmer_array, sep=',')
+        if label_flag == True:
+            np.savetxt('Embedder_Modified_Labels.csv', labels, sep=',')
 
     if perp == None and neighbors == None:
         print("No dimensionality reduction requested; frequency vector construction complete.")
-        print("Process completed in " + str(time.time() - t1)) + " seconds.")
+        print("Process completed in " + str(time.time() - t1) + " seconds.")
         sys.exit()
 
     if perp != None:
-        #OPT: Load kmer Embedding
+        #OPT: Load kmer Embedding and labels
+        #If labels is a string, means it's a path to a file
+        if label_param.split('.')[-1] == 'npy':
+            try:
+                labels = np.load(label_param)
+            except:
+                print('Something went wrong loading your .npy labels. Please specify full path.')
+        if label_param.split('.')[-1] == 'txt' or label_param.split('.')[-1] == 'csv':
+            try:
+                labels = np.loadtxt(label_param, delimiter=',')
+            except:
+                print('Something went wrong loading your .csv/.txt labels. Please modify code to include proper delimiter and/or specify full path.')
+
+
         if freqs != None:
             if freqs.split('.')[-1] == 'npy':
                 try:
@@ -134,11 +106,24 @@ def main():
             plot_meta_2D(tsne_embedding, 't-SNE', labels)
         if dimensionality == 3:
             plot_meta_3D(tsne_embedding, 't-SNE', labels)
-        else:
+        if dimensionality > 3:
             print("Invalid dimensionality for plotting. Sorry.")
 
     if neighbors != None:
+        #Load Labels
+        if label_param.split('.')[-1] == 'npy':
+            try:
+                labels = np.load(label_param)
+            except:
+                print('Something went wrong loading your .npy labels. Please specify full path.')
+        if label_param.split('.')[-1] == 'txt' or label_param.split('.')[-1] == 'csv':
+            try:
+                labels = np.loadtxt(label_param, delimiter=',')
+            except:
+                print('Something went wrong loading your .csv/.txt labels. Please modify code to include proper delimiter and/or specify full path.')
+
         #OPT: Load kmer embedding
+
         if freqs != None:
             if freqs.split('.')[-1] == 'npy':
                 try:
@@ -226,6 +211,7 @@ def plot_meta_3D(embedding, method, labels):
 
     pylab.title("3D Embedding: " + str(method))
     pylab.show()
+    pylab.savefig(str(method) + '_Embedding.png')
     return
 
 def umap_embed(neighbors, dims, metric, kmer_arr):
@@ -240,10 +226,12 @@ def tsne_embed(dims, perplexity, threads, kmer_arr):
     return tsne.fit_transform(kmer_arr)
 
 def plot_meta_2D(embedding, method, labels):
-    colors = [int(i % (max(contig_labels))) for i in contig_labels]
-    pylab.scatter(embedding[:,0], embedding[:,1],c=colors,cmap=pylab.cm.spectral)
+    colors = [int(i % (max(labels))) for i in labels]
+    cmspec = plt.get_cmap("nipy_spectral")
+    pylab.scatter(embedding[:,0], embedding[:,1],c=colors,cmap=cmspec)
     pylab.title(str(method) + "2D Plot")
     pylab.show()
+    pylab.savefig(str(method) + '_Embedding.png')
     return
 
 def train_and_score(em, test_size, kernel):
@@ -289,12 +277,18 @@ def u_run_nonsense(metrics):
         print(metric + " average classification score: ", np.mean(scores[-1]))
     return scores
 
-def convert_seqs(seqfile, contig_labels=None, k):
+def convert_seqs(seqfile, k, labels=None):
     #Returns an array of kmer frequency vectors (OPTIONAL: new label list based on original to compensate for chunking)
 
     kmer_list = []
-    if contig_labels != None:
+    if labels != None:
         new_labels = []
+
+        ext = contig_labels.split('.')[-1]
+        if ext == 'npy':
+            contig_labels = np.load(contig_labels)
+        elif ext == 'csv' or ext == 'txt':
+            contig_labels = np.loadtxt(contig_labels, delimiter=',')
 
     max_size = 5000
     min_size = 1000
@@ -317,18 +311,48 @@ def convert_seqs(seqfile, contig_labels=None, k):
     for index, contig in enumerate(kmer_list):
         for i, kmer_freq in enumerate(contig):
             #Append correct number of corresponding labels to y
-            if contig_labels != None:
+            if labels != None:
                 new_labels.append(contig_labels[index])
 
             flatter_list.append(kmer_freq)
 
-    if contig_labels != None:
+    if labels != None:
         return np.array(flatter_list), np.array(new_labels)
     else:
         return np.array(flatter_list)
 
+def Parse_Args(args=None):
+    class LineWrapRawTextHelpFormatter(argparse.RawDescriptionHelpFormatter):
+        def _split_lines(self, text, width):
+            text = self._whitespace_matcher.sub(' ', text).strip()
+            return _textwrap.wrap(text, width)
 
 
+    parser=argparse.ArgumentParser(description='Two functions:\n \
+                        1. Take a set of sequences (-s) and project into a kmer frequency array (-k). See code for method details.\n \
+                        2. Take a given kmer embedding (-ke) and reduce its dimensionality with either t-SNE (-t [perplexity]) or UMAP (-u [n_neighbors]).\n\n \
+                        In order to perform both of these tasks in sequential order, simply provide values for all parameters except (-ke).\n \
+                        In addition, please specify the dimensionality of your projected space (2 or 3 recommended; >4 will not plot) as well as your labels file (-l).',\
+                        formatter_class=argparse.RawTextHelpFormatter)
+
+    parser.add_argument('-s', metavar='sequences', default=None, type=str, help="Contig/scaffolds file (FASTA FORMAT ONLY)")
+
+    parser.add_argument('-l', metavar='labels', default=None, type=str, help="Labels file (npy or txt).")
+
+    parser.add_argument('-k', metavar='kmer length', default=None, type=int, help="Any number (hopefully above 3 and less than 9, unless you have a HUGE computer)")
+
+    parser.add_argument('-kf', metavar='kmer freqs', default=None, type=str, help="Path to kmer frequency array file (.npy or .csv)")
+
+    parser.add_argument('-t', metavar='tSNE (perplexity)', default=None, type=int, help="Enables barnes-hut t-SNE. Please also provide thread num to use. (-tn)")
+
+    parser.add_argument('-u', metavar='UMAP (n_neighbors)', default=None, type=int, help="Enables UMAP (Universal Manifold Approximation and Projection).")
+
+    parser.add_argument('-d', metavar='Dimensionality', default=None, type=int, help="Dimensions to reduce embedding to with t-SNE or UMAP.")
+
+    parser.add_argument('-nt', metavar='Threads', default=None, type=int, help="Number of threads to use for multicore TSNE.")
+
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    main()
+    args = Parse_Args(sys.argv[1:])
+    main(args)
