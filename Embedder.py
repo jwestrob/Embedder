@@ -11,6 +11,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from matplotlib.ticker import NullFormatter
 from MulticoreTSNE import MulticoreTSNE as TSNE
 
+from pathos.multiprocessing import ProcessingPool as Pool
 from kpal.klib import Profile
 
 import pandas as pd
@@ -47,18 +48,21 @@ def main(args):
 
     dimensionality = args.d
 
+    labels = None
+
     ### If desired, compute kmer embedding; if necessary, modify labels to fit
     label_flag = False
     if seqs != None:
         if label_param == None:
-            kmer_array = convert_seqs(seqs, k_len)
+            kmer_array = convert_seqs(seqs, k_len, threads)
         else:
             label_flag = True
-            kmer_array, labels = convert_seqs(seqs, k_len, label_param)
+            kmer_array, labels = convert_seqs(seqs, k_len, threads, label_param)
+            labels = [int(x) for x in labels]
     #Save your stuff to output files
-        np.savetxt('Embedder_' + str(k_len) + 'mer_freqs.csv', kmer_array, sep=',')
+        np.savetxt('Embedder_' + str(k_len) + 'mer_freqs.csv', kmer_array, delimiter=',')
         if label_flag == True:
-            np.savetxt('Embedder_Modified_Labels.csv', labels, sep=',')
+            np.savetxt('Embedder_Modified_Labels.csv', labels, delimiter=',')
 
     if perp == None and neighbors == None:
         print("No dimensionality reduction requested; frequency vector construction complete.")
@@ -67,17 +71,18 @@ def main(args):
 
     if perp != None:
         #OPT: Load kmer Embedding and labels
-        #If labels is a string, means it's a path to a file
-        if label_param.split('.')[-1] == 'npy':
-            try:
-                labels = np.load(label_param)
-            except:
-                print('Something went wrong loading your .npy labels. Please specify full path.')
-        if label_param.split('.')[-1] == 'txt' or label_param.split('.')[-1] == 'csv':
-            try:
-                labels = np.loadtxt(label_param, delimiter=',')
-            except:
-                print('Something went wrong loading your .csv/.txt labels. Please modify code to include proper delimiter and/or specify full path.')
+        if labels is None:
+            #If labels is a string, means it's a path to a file
+            if label_param.split('.')[-1] == 'npy':
+                try:
+                    labels = np.load(label_param)
+                except:
+                    print('Something went wrong loading your .npy labels. Please specify full path.')
+            if label_param.split('.')[-1] == 'txt' or label_param.split('.')[-1] == 'csv':
+                try:
+                    labels = np.loadtxt(label_param, delimiter=',')
+                except:
+                    print('Something went wrong loading your .csv/.txt labels. Please modify code to include proper delimiter and/or specify full path.')
 
 
         if freqs != None:
@@ -110,17 +115,19 @@ def main(args):
             print("Invalid dimensionality for plotting. Sorry.")
 
     if neighbors != None:
-        #Load Labels
-        if label_param.split('.')[-1] == 'npy':
-            try:
-                labels = np.load(label_param)
-            except:
-                print('Something went wrong loading your .npy labels. Please specify full path.')
-        if label_param.split('.')[-1] == 'txt' or label_param.split('.')[-1] == 'csv':
-            try:
-                labels = np.loadtxt(label_param, delimiter=',')
-            except:
-                print('Something went wrong loading your .csv/.txt labels. Please modify code to include proper delimiter and/or specify full path.')
+
+        if labels is None:
+            #Load Labels
+            if label_param.split('.')[-1] == 'npy':
+                try:
+                    labels = np.load(label_param)
+                except:
+                    print('Something went wrong loading your .npy labels. Please specify full path.')
+            if label_param.split('.')[-1] == 'txt' or label_param.split('.')[-1] == 'csv':
+                try:
+                    labels = np.loadtxt(label_param, delimiter=',')
+                except:
+                    print('Something went wrong loading your .csv/.txt labels. Please modify code to include proper delimiter and/or specify full path.')
 
         #OPT: Load kmer embedding
 
@@ -159,6 +166,27 @@ def calc_kmer_freqs(split_seqs, kmer_size):
     '''
 
     kmer_freqs = []
+
+
+
+
+    def kmer_singleton(seq, kmer_size):
+        if type(seq) != str:
+            seq = str(seq)
+        seqlist = [seq]
+
+        ktable = Profile.from_sequences(seqlist, kmer_size, name=None)
+
+        if len(seq) < 3000:
+            if ktable.total >= len(seq)/2:
+                ktable.counts = [count/ktable.total for count in ktable.counts]
+                return ktable.counts
+
+        else:
+            if ktable.total >= 1500:
+                ktable.counts = [count/ktable.total for count in ktable.counts]
+                return ktable.counts
+    """
     for seq in split_seqs:
         temp_list = []
 
@@ -175,6 +203,9 @@ def calc_kmer_freqs(split_seqs, kmer_size):
             if ktable.total >= 1500:
                 ktable.counts = [count/ktable.total for count in ktable.counts]
                 kmer_freqs.append(ktable.counts)
+    """
+
+    kmer_freqs = list(map(lambda x: kmer_singleton(x, kmer_size), split_seqs))
 
     return kmer_freqs
 
@@ -277,23 +308,27 @@ def u_run_nonsense(metrics):
         print(metric + " average classification score: ", np.mean(scores[-1]))
     return scores
 
-def convert_seqs(seqfile, k, labels=None):
+def convert_seqs(seqfile, k, threads, labels=None):
     #Returns an array of kmer frequency vectors (OPTIONAL: new label list based on original to compensate for chunking)
 
     kmer_list = []
     if labels != None:
         new_labels = []
 
-        ext = contig_labels.split('.')[-1]
+        ext = labels.split('.')[-1]
         if ext == 'npy':
-            contig_labels = np.load(contig_labels)
+            contig_labels = np.load(labels)
         elif ext == 'csv' or ext == 'txt':
-            contig_labels = np.loadtxt(contig_labels, delimiter=',')
+            contig_labels = np.loadtxt(labels, delimiter=',')
 
     max_size = 5000
     min_size = 1000
 
-    for index, record in enumerate(SeqIO.parse('/home/jacob/Documents/Corals/Maxbin_Simulated_80x_metagenome.scaffold.fasta', "fasta")):
+
+
+    """
+
+    for index, record in enumerate(SeqIO.parse(seqfile, "fasta")):
         s = StringIO(str(record.seq))
         split_seqs = []
         kmer_freqs = []
@@ -305,8 +340,25 @@ def convert_seqs(seqfile, k, labels=None):
         kmer_freqs = calc_kmer_freqs(split_seqs, k)
 
         kmer_list.append(kmer_freqs)
+    """
+
+    #All of what you see below (up to and including the kmer_list declaration) is an alternative to the block comment code written above;
+    #Hopefully this successfully parallelizes the kmer frequency vector creation step. Let's see
+
+    p = Pool(threads)
+
+    def process_contig(rec, min_size, max_size, k):
+        s = StringIO(str(rec.seq))
+
+        split_seqs = chunk_sequence(s, min_size, max_size)
+
+        return calc_kmer_freqs(split_seqs, k)
+
+    kmer_list = list(p.map(lambda x: process_contig(x, min_size, max_size, k), SeqIO.parse(seqfile, 'fasta')))
+
 
     #kmer array comes out in a weird nested list; fix its shape
+    flatter_list = []
 
     for index, contig in enumerate(kmer_list):
         for i, kmer_freq in enumerate(contig):
